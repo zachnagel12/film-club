@@ -1,92 +1,30 @@
-// lib/cache.ts
-import type { MovieRecord, UserActions } from "./types";
-
-/**
- * In-memory cache (simple + reliable).
- * If you later swap to Redis/DB, keep the same exported functions.
- */
-
-type UserRecord = {
-  id: string;
-  createdAt: number;
-  actions: UserActions;
-  // You may already store more personalization data here; keep it additive.
-  // Example placeholders:
-  feelCentroid?: number[] | null;
-  directorAff?: Record<string, number>;
-  actorAff?: Record<string, number>;
-  decadeAff?: Record<string, number>;
-};
-
-const moviesById = new Map<number, MovieRecord>();
-const usersById = new Map<string, UserRecord>();
-
-/** MOVIES */
-export function getMovie(tmdbId: number): MovieRecord | undefined {
-  return moviesById.get(tmdbId);
-}
-
-export function upsertMovie(movie: MovieRecord): void {
-  moviesById.set(movie.tmdbId, movie);
-}
-
-export function getAllMovies(): MovieRecord[] {
-  return Array.from(moviesById.values());
-}
-
-/** USERS */
-export function getOrCreateUser(userId: string): UserRecord {
-  const id = userId || "default";
-  const existing = usersById.get(id);
-  if (existing) return existing;
-
-  const created: UserRecord = {
-    id,
-    createdAt: Date.now(),
-    actions: { saved: [], disliked: [] }
-  };
-
-  usersById.set(id, created);
-  return created;
-}
-
-export function getUserActions(userId: string): UserActions {
-  const u = getOrCreateUser(userId);
-  // Defensive: if actions missing for any reason
-  u.actions = u.actions ?? { saved: [], disliked: [] };
-  return u.actions;
-}
-
-export function toggleUserSaved(userId: string, tmdbId: number): UserRecord {
-  const u = getOrCreateUser(userId);
-  u.actions = u.actions ?? { saved: [], disliked: [] };
-
-  const saved = new Set(u.actions.saved ?? []);
-  if (saved.has(tmdbId)) saved.delete(tmdbId);
-  else saved.add(tmdbId);
-
-  // If saved, ensure it is NOT disliked
-  const disliked = new Set(u.actions.disliked ?? []);
-  disliked.delete(tmdbId);
-
-  u.actions.saved = Array.from(saved);
-  u.actions.disliked = Array.from(disliked);
-  return u;
-}
-
-export function toggleUserDisliked(userId: string, tmdbId: number): UserRecord {
-  const u = getOrCreateUser(userId);
-  u.actions = u.actions ?? { saved: [], disliked: [] };
-
-  const disliked = new Set(u.actions.disliked ?? []);
-  if (disliked.has(tmdbId)) disliked.delete(tmdbId);
-  else disliked.add(tmdbId);
-
-  // If disliked, remove from saved
-  const saved = new Set(u.actions.saved ?? []);
-  saved.delete(tmdbId);
-
-  u.actions.saved = Array.from(saved);
-  u.actions.disliked = Array.from(disliked);
-  return u;
-}
+:49:18.579 
+23:49:18.579 
+   	- incremental was set to true
+23:49:18.579 
+   	- include was updated to add '.next/types/**/*.ts'
+23:49:18.579 
+   	- plugins was updated to add { name: 'next' }
+23:49:18.579 
+23:49:21.061 
+Failed to compile.
+23:49:21.062 
+23:49:21.062 
+./src/app/api/user/rate/route.ts:2:37
+23:49:21.062 
+Type error: Module '"../../../../lib/cache"' has no exported member 'saveUser'.
+23:49:21.063 
+23:49:21.063 
+  1 | import { NextRequest, NextResponse } from "next/server";
+23:49:21.063 
+> 2 | import { getMovie, getOrCreateUser, saveUser } from "../../../../lib/cache";
+23:49:21.063 
+    |                                     ^
+23:49:21.064 
+  3 | import { cosine } from "../../../../lib/embeddings";
+23:49:21.064 
+  4 |
+23:49:21.064 
+  5 | function addVec(a: number[], b: number[]) {
+23:49:21.107 
+Error: Command "npm run build" exited with 1
