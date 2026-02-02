@@ -2,10 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAllMovies, getMovie, upsertMovie, getOrCreateUser } from "../../../lib/cache";
 import { recV2Breakdown } from "../../../lib/score";
 import type { MovieRecord, Recommendation } from "../../../lib/types";
-import { tmdbDiscoverIds, tmdbFetchFull, tmdbRecommendIds, tmdbSimilarIds, buildMovieRecordBase } from "../../../lib/tmdb";
+import {
+  tmdbDiscoverIds,
+  tmdbFetchFull,
+  tmdbRecommendIds,
+  tmdbSimilarIds,
+  buildMovieRecordBase
+} from "../../../lib/tmdb";
 import { feelVectorFromText } from "../../../lib/embeddings";
 import { rerankPersonal } from "../../../lib/personalize";
-import { oneLineReason } from "../../../lib/reason";
+import { oneLineReasonSpecific } from "../../../lib/reason";
 
 function uniq<T>(arr: T[]) {
   return Array.from(new Set(arr));
@@ -34,6 +40,7 @@ async function ensureInCache(tmdbId: number) {
 
   const full = await tmdbFetchFull(tmdbId);
   const base = buildMovieRecordBase({ tmdbId, full });
+
   const feelVec = feelVectorFromText(base.overview, base.tagline, 256);
   const styleVec = feelVec; // keep for now; ideal future: true style embedding
 
@@ -192,7 +199,7 @@ export async function GET(req: NextRequest) {
     // Backfill from TMDB similar/recommendations
     const tmdbBackfill = uniq([...(await tmdbSimilarIds(seed.tmdbId)), ...(await tmdbRecommendIds(seed.tmdbId))]);
 
-    // ✅ True lane picks (don’t let "first 60" be all feel)
+    // ✅ True lane picks
     const feelPick = sample(feelNeighbors, 70);
     const worldPick = sample(worldIds, 35);
     const bridgePick = sample(bridgeIds, 20);
@@ -236,7 +243,7 @@ export async function GET(req: NextRequest) {
 
     const finalChosen = [...top10, ...fill];
 
-    // Build output (✅ add reason)
+    // Build output (✅ specific reason line)
     const out: Recommendation[] = finalChosen.map((s) => ({
       tmdbId: s.m.tmdbId,
       title: s.m.title,
@@ -245,7 +252,7 @@ export async function GET(req: NextRequest) {
       directors: s.m.directors.map((x) => x.name).join(", "),
       vote_average: s.m.tmdbVoteAverage,
       vote_count: s.m.tmdbVoteCount,
-      reason: oneLineReason(s.b), // ✅ new
+      reason: oneLineReasonSpecific(seed, s.m, s.b),
       breakdown: s.b
     }));
 
