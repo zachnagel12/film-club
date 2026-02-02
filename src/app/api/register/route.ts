@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 
 export async function POST(req: Request) {
@@ -11,35 +11,22 @@ export async function POST(req: Request) {
 
   if (!email || !password || password.length < 8) {
     return NextResponse.json(
-      { error: "Password must be at least 8 characters." },
+      { error: "Email required and password must be at least 8 characters." },
       { status: 400 }
     );
   }
 
-  const existing = await prisma.user.findUnique({
-    where: { email },
-  });
-
+  const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
-    return NextResponse.json(
-      { error: "Email already in use." },
-      { status: 409 }
-    );
+    return NextResponse.json({ error: "Email already in use." }, { status: 409 });
   }
 
   const passwordHash = await bcrypt.hash(password, 12);
 
   const user = await prisma.user.create({
-    data: {
-      email,
-      passwordHash,
-      name: name || null,
-    },
+    data: { email, passwordHash, name: name || null },
+    select: { id: true, email: true, name: true, role: true }
   });
 
-  return NextResponse.json({
-    id: user.id,
-    email: user.email,
-    name: user.name,
-  });
+  return NextResponse.json({ user });
 }
