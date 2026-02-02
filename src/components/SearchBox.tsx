@@ -17,6 +17,7 @@ type Recommendation = {
   directors?: string;
   vote_average?: number;
   vote_count?: number;
+  reason?: string; // ✅ new one-liner
 };
 
 export default function SearchBox() {
@@ -40,7 +41,6 @@ export default function SearchBox() {
       return;
     }
 
-    // your existing TMDB search route
     const res = await fetch(`/api/tmdb/search?q=${encodeURIComponent(q.trim())}`);
     if (!res.ok) {
       setError("Search failed.");
@@ -70,12 +70,12 @@ export default function SearchBox() {
     const j = await res.json();
     setRecs(j.results ?? []);
 
-    // ✅ IMPORTANT: clear the search UI data so it “disappears”
+    // clear search UI data so it “disappears”
     setQuery("");
     setHits([]);
     setSelected(null);
 
-    // ✅ Switch to results-only view
+    // switch to results-only view
     setView("results");
   }
 
@@ -88,7 +88,7 @@ export default function SearchBox() {
     setView("search");
   }
 
-  // ✅ Results-only mode (only 10 movies shown)
+  // Results-only mode (only 10 movies shown)
   if (view === "results") {
     return (
       <div className="mt-6">
@@ -105,7 +105,12 @@ export default function SearchBox() {
               <div className="font-medium">
                 {r.title} <span className="opacity-60">({r.year})</span>
               </div>
+
               {r.directors && <div className="text-sm opacity-70">{r.directors}</div>}
+
+              {/* ✅ new one-liner reason */}
+              {r.reason && <div className="mt-1 text-sm opacity-80">{r.reason}</div>}
+
               {(r.vote_average != null || r.vote_count != null) && (
                 <div className="mt-1 text-xs opacity-60">
                   {r.vote_average != null ? `TMDB ${r.vote_average}` : ""}
@@ -140,11 +145,11 @@ export default function SearchBox() {
 
       {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
 
-      {/* Results list from TMDB search (disappears once view becomes "results") */}
       <div className="mt-4 space-y-2">
         {hits.slice(0, 8).map((h) => {
           const year = h.release_date?.slice(0, 4) ?? "—";
           const isSelected = selected?.id === h.id;
+
           return (
             <button
               key={h.id}
