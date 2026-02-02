@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAllMovies, getMovie, upsertMovie, getOrCreateUser } from "../../../lib/cache";
+import { getAllMovies, getMovie, upsertMovie, getOrCreateUser, getUserActions } from "../../../lib/cache";
 import { recV2Breakdown } from "../../../lib/score";
 import type { MovieRecord, Recommendation } from "../../../lib/types";
 import {
@@ -11,19 +11,15 @@ import {
 } from "../../../lib/tmdb";
 import { feelVectorFromText } from "../../../lib/embeddings";
 import { rerankPersonal } from "../../../lib/personalize";
-import { oneLineReasonSpecific } from "../../../lib/reason";
+import { buildReason } from "../../../lib/reason";
 
 function uniq<T>(arr: T[]) {
   return Array.from(new Set(arr));
 }
 
-function clampTop<T>(arr: T[], n: number) {
-  return arr.slice(0, Math.max(0, n));
-}
-
 /**
  * Random sample from an array (cheap shuffle then slice).
- * Helps diversify the ensured cache set so you don't always ingest the same lane.
+ * Helps diversify ensured cache so you don't always ingest the same lane.
  */
 function sample<T>(arr: T[], n: number) {
   const a = [...arr];
@@ -42,7 +38,7 @@ async function ensureInCache(tmdbId: number) {
   const base = buildMovieRecordBase({ tmdbId, full });
 
   const feelVec = feelVectorFromText(base.overview, base.tagline, 256);
-  const styleVec = feelVec; // keep for now; ideal future: true style embedding
+  const styleVec = feelVec; // TODO: replace w/ true style embedding later
 
   const record: MovieRecord = {
     ...base,
@@ -77,19 +73,46 @@ function cos(a: number[], b: number[]) {
     nb += b[i] * b[i];
   }
   const den = Math.sqrt(na) * Math.sqrt(nb) || 1;
-  return dot / den; // [-1, 1]
+  return dot / den;
 }
 
 function sim01(a: number[], b: number[]) {
-  return (1 + cos(a, b)) / 2; // [0, 1]
+  return (1 + cos(a, b)) / 2;
 }
 
 /**
- * MMR selection on FEEL vectors inside a strong frontier.
- * Keeps "integrity" (high RecScore) but reduces near-duplicate vibe picks.
+ * Mood bias (small, additive).
+ * Keeps integrity: still mostly your RecScore, just nudged.
+ */
+function moodAdjustedScore(b: any, mood: string) {
+  let score = b.RecScore;
+
+  switch (mood) {
+    case "intense":
+      score += 0.04 * b.FeelSim + 0.02 * b.StyleSim;
+      break;
+    case "thoughtful":
+      score += 0.03 * b.DirectionSim + 0.02 * b.WorldSim;
+      break;
+    case "comfort":
+      score += 0.03 * b.WorldSim + 0.02 * b.DecadeFit;
+      break;
+    case "high-energy":
+      score += 0.04 * b.StyleSim + 0.01 * b.FeelSim;
+      break;
+    default:
+      break;
+  }
+
+  return score;
+}
+
+/**
+ * MMR selection on FEEL vectors.
+ * Uses item.adj as relevance if present, otherwise RecScore.
  */
 function mmrSelect(
-  frontier: { m: MovieRecord; b: any }[],
+  frontier: { m: MovieRecord; b: any; adj?: number }[],
   k: number,
   lambda = 0.86,
   caps?: {
@@ -102,7 +125,7 @@ function mmrSelect(
   const maxSameLeadActor = caps?.maxSameLeadActor ?? 1;
   const maxSameDecade = caps?.maxSameDecade ?? 3;
 
-  const chosen: { m: MovieRecord; b: any }[] = [];
+  const chosen: { m: MovieRecord; b: any; adj?: number }[] = [];
   const remaining = [...frontier];
 
   const directorCounts = new Map<number, number>();
@@ -131,7 +154,7 @@ function mmrSelect(
         redundancy = Math.max(redundancy, sim01(m.feelVec, picked.m.feelVec));
       }
 
-      const base = item.b.RecScore;
+      const base = item.adj ?? item.b.RecScore;
       const val = lambda * base - (1 - lambda) * redundancy;
 
       if (val > bestVal) {
@@ -166,20 +189,27 @@ export async function GET(req: NextRequest) {
 
     const personalize = req.nextUrl.searchParams.get("personalize") === "1";
     const userId = req.nextUrl.searchParams.get("userId") || "default";
+    const mood = req.nextUrl.searchParams.get("mood") || "default";
+
+    // Ensure user exists (for personalization + actions)
+    getOrCreateUser(userId);
+
+    const actions = getUserActions(userId);
+    const dislikedSet = new Set(actions.disliked ?? []);
 
     const seed = await ensureInCache(tmdbId);
 
-    // --- Candidate generation (true multi-lane) ---
+    // --- Candidate generation (multi-lane) ---
     const cached = getAllMovies().filter((m) => m.tmdbId !== seed.tmdbId);
 
-    // Feel neighbors from cache (reservoir)
+    // 1) feel neighbors (cached)
     const feelNeighbors = cached
       .map((m) => ({ m, sim: recV2Breakdown(seed, m).FeelSim }))
       .sort((a, b) => b.sim - a.sim)
-      .slice(0, 140)
+      .slice(0, 160)
       .map((x) => x.m.tmdbId);
 
-    // World neighbors (TMDB discover by genres/keywords)
+    // 2) world neighbors (TMDB discover by genres/keywords)
     const kw = seed.keywords.slice(0, 8).map((k) => k.id).join("|");
     const gs = seed.genres.slice(0, 4).map((g) => g.id).join(",");
 
@@ -190,24 +220,25 @@ export async function GET(req: NextRequest) {
       page: 1
     });
 
-    // Surprise bridge (director-only to reduce acting dominance)
+    // 3) bridge (director-only; keeps acting from dominating)
     const topDirector = seed.directors[0]?.id;
     const bridgeIds = uniq([
       ...(topDirector ? await tmdbDiscoverIds({ with_crew: String(topDirector), vote_count_gte: 50, page: 1 }) : [])
     ]);
 
-    // Backfill from TMDB similar/recommendations
+    // 4) tmdb backfill
     const tmdbBackfill = uniq([...(await tmdbSimilarIds(seed.tmdbId)), ...(await tmdbRecommendIds(seed.tmdbId))]);
 
-    // ✅ True lane picks
+    // Lane samples
     const feelPick = sample(feelNeighbors, 70);
     const worldPick = sample(worldIds, 35);
     const bridgePick = sample(bridgeIds, 20);
     const backfillPick = sample(tmdbBackfill, 35);
 
+    // Combined pool, filter disliked + seed
     const ensureIds = uniq([...feelPick, ...worldPick, ...bridgePick, ...backfillPick])
-      .filter((id) => id !== seed.tmdbId)
-      .slice(0, 140);
+      .filter((id) => id !== seed.tmdbId && !dislikedSet.has(id))
+      .slice(0, 160);
 
     // Ensure in cache
     const ensured: MovieRecord[] = [];
@@ -215,26 +246,34 @@ export async function GET(req: NextRequest) {
       try {
         ensured.push(await ensureInCache(id));
       } catch {
-        // skip
+        // skip failures
       }
     }
 
-    // Score
-    const scored = ensured
-      .map((m) => ({ m, b: recV2Breakdown(seed, m) }))
-      .sort((a, b) => b.b.RecScore - a.b.RecScore);
+    const ensuredFiltered = ensured.filter((m) => m.tmdbId !== seed.tmdbId && !dislikedSet.has(m.tmdbId));
 
-    // ✅ Diversify inside a strong frontier using MMR on feel
+    // Score (+ mood adjust)
+    const scored = ensuredFiltered
+      .map((m) => {
+        const b = recV2Breakdown(seed, m);
+        const adj = moodAdjustedScore(b, mood);
+        return { m, b, adj };
+      })
+      .sort((a, b) => b.adj - a.adj);
+
+    // MMR diversify in a strong frontier
     const frontier = scored.slice(0, 90);
+
     const top10 = mmrSelect(frontier, 10, 0.86, {
       maxSameDirector: 1,
       maxSameLeadActor: 1,
       maxSameDecade: 3
     });
 
-    // Fill remaining up to 25 with looser caps
+    // Fill remaining to 25 with looser caps
     const chosenIds = new Set(top10.map((x) => x.m.tmdbId));
     const remaining = frontier.filter((x) => !chosenIds.has(x.m.tmdbId));
+
     const fill = mmrSelect(remaining, 15, 0.90, {
       maxSameDirector: 2,
       maxSameLeadActor: 2,
@@ -243,25 +282,29 @@ export async function GET(req: NextRequest) {
 
     const finalChosen = [...top10, ...fill];
 
-    // Build output (✅ specific reason line)
-    const out: Recommendation[] = finalChosen.map((s) => ({
-      tmdbId: s.m.tmdbId,
-      title: s.m.title,
-      year: s.m.year,
-      poster: s.m.poster,
-      directors: s.m.directors.map((x) => x.name).join(", "),
-      vote_average: s.m.tmdbVoteAverage,
-      vote_count: s.m.tmdbVoteCount,
-      reason: oneLineReasonSpecific(seed, s.m, s.b),
-      breakdown: s.b
-    }));
+    // Output with specific reasons + details
+    const out: Recommendation[] = finalChosen.map((s) => {
+      const rr = buildReason(seed, s.m, s.b);
+      return {
+        tmdbId: s.m.tmdbId,
+        title: s.m.title,
+        year: s.m.year,
+        poster: s.m.poster,
+        directors: s.m.directors.map((x) => x.name).join(", "),
+        vote_average: s.m.tmdbVoteAverage,
+        vote_count: s.m.tmdbVoteCount,
+        reason: rr.reason,
+        reasonDetails: rr.details,
+        breakdown: s.b
+      };
+    });
 
-    // Optional personalization rerank over same candidate pool
+    // Optional personalization rerank (uses your existing function)
     if (personalize) {
       const user = getOrCreateUser(userId);
-      const moviesById = new Map(ensured.map((m) => [m.tmdbId, m]));
+      const moviesById = new Map(ensuredFiltered.map((m) => [m.tmdbId, m]));
       const base = out.map((r) => ({ tmdbId: r.tmdbId, baseScore: r.breakdown.RecScore }));
-      const reranked = rerankPersonal(base, moviesById, user);
+      const reranked = rerankPersonal(base, moviesById, user as any);
 
       const byId = new Map(out.map((r) => [r.tmdbId, r]));
       const rerankedOut = reranked
