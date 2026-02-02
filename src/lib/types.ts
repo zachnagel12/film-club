@@ -5,7 +5,10 @@ export type TMDBSearchResult = {
   poster: string | null;
 };
 
-export type PersonRef = { id: number; name: string };
+export type PersonRef = {
+  id: number;
+  name: string;
+};
 
 export type MovieRecord = {
   tmdbId: number;
@@ -61,7 +64,12 @@ export type Recommendation = {
   year: number | null;
   poster: string | null;
   directors: string;
+
   vote_average: number | null;
   vote_count: number | null;
+
+  /** One-line explanation of why this was recommended (derived from RecBreakdown). */
+  reason?: string;
+
   breakdown: RecBreakdown;
 };
