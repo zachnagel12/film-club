@@ -13,12 +13,32 @@ type Recommendation = {
   tmdbId: number;
   title: string;
   year: number;
+  // NOTE: your API returns `poster` as string|null
+  // It might be a full URL OR a TMDB poster path. We'll handle both.
   poster?: string | null;
   directors?: string;
   vote_average?: number;
   vote_count?: number;
-  reason?: string; // ✅ new one-liner
+  reason?: string;
 };
+
+function yearFromDate(d?: string) {
+  return d?.slice(0, 4) ?? "—";
+}
+
+function tmdbPosterFromPath(posterPath?: string | null, size: "w92" | "w185" | "w342" = "w185") {
+  if (!posterPath) return null;
+  return `https://image.tmdb.org/t/p/${size}${posterPath}`;
+}
+
+function normalizePosterUrl(poster?: string | null, size: "w92" | "w185" | "w342" = "w185") {
+  if (!poster) return null;
+  // full URL already
+  if (poster.startsWith("http://") || poster.startsWith("https://")) return poster;
+  // if it's a TMDB poster path like "/abc123.jpg"
+  if (poster.startsWith("/")) return tmdbPosterFromPath(poster, size);
+  return poster; // fallback
+}
 
 export default function SearchBox() {
   const [view, setView] = useState<"search" | "loading" | "results">("search");
@@ -46,7 +66,9 @@ export default function SearchBox() {
       setError("Search failed.");
       return;
     }
+
     const j = await res.json();
+    // Expecting j.results items with poster_path; keep as-is
     setHits(j.results ?? []);
   }
 
@@ -70,12 +92,10 @@ export default function SearchBox() {
     const j = await res.json();
     setRecs(j.results ?? []);
 
-    // clear search UI data so it “disappears”
+    // hide search UI once recs exist
     setQuery("");
     setHits([]);
     setSelected(null);
-
-    // switch to results-only view
     setView("results");
   }
 
@@ -88,7 +108,7 @@ export default function SearchBox() {
     setView("search");
   }
 
-  // Results-only mode (only 10 movies shown)
+  // ✅ Results-only mode (only 10 recs shown)
   if (view === "results") {
     return (
       <div className="mt-6">
@@ -100,31 +120,47 @@ export default function SearchBox() {
         </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {top10.map((r) => (
-            <div key={r.tmdbId} className="rounded border p-3">
-              <div className="font-medium">
-                {r.title} <span className="opacity-60">({r.year})</span>
-              </div>
+          {top10.map((r) => {
+            const posterUrl = normalizePosterUrl(r.poster, "w185");
+            return (
+              <div key={r.tmdbId} className="flex gap-3 rounded border p-3">
+                {posterUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={posterUrl}
+                    alt={`${r.title} poster`}
+                    className="h-[84px] w-[56px] flex-none rounded object-cover"
+                    loading="lazy"
+                  />
+                ) : (
+                  <div className="h-[84px] w-[56px] flex-none rounded bg-zinc-100" />
+                )}
 
-              {r.directors && <div className="text-sm opacity-70">{r.directors}</div>}
+                <div className="min-w-0">
+                  <div className="truncate font-medium">
+                    {r.title} <span className="opacity-60">({r.year})</span>
+                  </div>
 
-              {/* ✅ new one-liner reason */}
-              {r.reason && <div className="mt-1 text-sm opacity-80">{r.reason}</div>}
+                  {r.directors && <div className="truncate text-sm opacity-70">{r.directors}</div>}
 
-              {(r.vote_average != null || r.vote_count != null) && (
-                <div className="mt-1 text-xs opacity-60">
-                  {r.vote_average != null ? `TMDB ${r.vote_average}` : ""}
-                  {r.vote_count != null ? ` • ${r.vote_count} votes` : ""}
+                  {r.reason && <div className="mt-1 text-sm opacity-80">{r.reason}</div>}
+
+                  {(r.vote_average != null || r.vote_count != null) && (
+                    <div className="mt-1 text-xs opacity-60">
+                      {r.vote_average != null ? `TMDB ${r.vote_average}` : ""}
+                      {r.vote_count != null ? ` • ${r.vote_count} votes` : ""}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          ))}
+              </div>
+            );
+          })}
         </div>
       </div>
     );
   }
 
-  // Search / selection UI (hidden after results)
+  // ✅ Search / selection UI (with poster cards)
   return (
     <div className="mt-2">
       <div className="flex gap-2">
@@ -145,23 +181,68 @@ export default function SearchBox() {
 
       {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
 
+      {/* Selected preview card (optional but helpful) */}
+      {selected && (
+        <div className="mt-4 flex items-center justify-between rounded border p-3">
+          <div className="flex min-w-0 items-center gap-3">
+            {tmdbPosterFromPath(selected.poster_path, "w92") ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={tmdbPosterFromPath(selected.poster_path, "w92")!}
+                alt={`${selected.title} poster`}
+                className="h-[84px] w-[56px] rounded object-cover"
+                loading="lazy"
+              />
+            ) : (
+              <div className="h-[84px] w-[56px] rounded bg-zinc-100" />
+            )}
+            <div className="min-w-0">
+              <div className="truncate font-medium">
+                {selected.title} <span className="opacity-60">({yearFromDate(selected.release_date)})</span>
+              </div>
+              <div className="text-xs opacity-60">TMDB ID: {selected.id}</div>
+            </div>
+          </div>
+
+          <button onClick={() => setSelected(null)} className="rounded border px-3 py-1 text-sm">
+            Change
+          </button>
+        </div>
+      )}
+
+      {/* Search results as cards */}
       <div className="mt-4 space-y-2">
         {hits.slice(0, 8).map((h) => {
-          const year = h.release_date?.slice(0, 4) ?? "—";
+          const year = yearFromDate(h.release_date);
           const isSelected = selected?.id === h.id;
+          const posterUrl = tmdbPosterFromPath(h.poster_path, "w92");
 
           return (
             <button
               key={h.id}
               onClick={() => setSelected(h)}
-              className={`w-full rounded border px-3 py-2 text-left ${
+              className={`flex w-full items-center gap-3 rounded border p-3 text-left ${
                 isSelected ? "border-black" : "border-zinc-200"
               }`}
             >
-              <div className="font-medium">
-                {h.title} <span className="opacity-60">({year})</span>
+              {posterUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={posterUrl}
+                  alt={`${h.title} poster`}
+                  className="h-[84px] w-[56px] flex-none rounded object-cover"
+                  loading="lazy"
+                />
+              ) : (
+                <div className="h-[84px] w-[56px] flex-none rounded bg-zinc-100" />
+              )}
+
+              <div className="min-w-0">
+                <div className="truncate font-medium">
+                  {h.title} <span className="opacity-60">({year})</span>
+                </div>
+                <div className="text-xs opacity-60">TMDB ID: {h.id}</div>
               </div>
-              <div className="text-xs opacity-60">TMDB ID: {h.id}</div>
             </button>
           );
         })}
