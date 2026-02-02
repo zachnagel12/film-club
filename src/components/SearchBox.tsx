@@ -2,50 +2,48 @@
 
 import { useMemo, useState } from "react";
 
-type TmdbSearchHit = {
+type SearchHit = {
   id: number;
   title: string;
-  release_date?: string;
-  poster_path?: string | null;
+  year: string | null;          // <- from your TMDBSearchResult type
+  poster: string | null;        // <- can be full URL or TMDB poster path
+  director?: string | null;     // <- we’ll add this in the API route
 };
 
 type Recommendation = {
   tmdbId: number;
   title: string;
   year: number;
-  // NOTE: your API returns `poster` as string|null
-  // It might be a full URL OR a TMDB poster path. We'll handle both.
-  poster?: string | null;
-  directors?: string;
+  poster?: string | null;       // <- full URL or TMDB poster path
+  directors?: string;           // <- already in your recommend response
   vote_average?: number;
   vote_count?: number;
-  reason?: string;
+  reason?: string;              // <- new one-liner
 };
 
-function yearFromDate(d?: string) {
-  return d?.slice(0, 4) ?? "—";
-}
-
-function tmdbPosterFromPath(posterPath?: string | null, size: "w92" | "w185" | "w342" = "w185") {
-  if (!posterPath) return null;
+function tmdbPosterFromPath(posterPath: string, size: "w92" | "w185" | "w342" = "w185") {
   return `https://image.tmdb.org/t/p/${size}${posterPath}`;
 }
 
 function normalizePosterUrl(poster?: string | null, size: "w92" | "w185" | "w342" = "w185") {
   if (!poster) return null;
-  // full URL already
+
+  // already a full URL
   if (poster.startsWith("http://") || poster.startsWith("https://")) return poster;
-  // if it's a TMDB poster path like "/abc123.jpg"
+
+  // TMDB poster path like "/abc123.jpg"
   if (poster.startsWith("/")) return tmdbPosterFromPath(poster, size);
-  return poster; // fallback
+
+  // fallback (in case you store something unexpected)
+  return poster;
 }
 
 export default function SearchBox() {
   const [view, setView] = useState<"search" | "loading" | "results">("search");
 
   const [query, setQuery] = useState("");
-  const [hits, setHits] = useState<TmdbSearchHit[]>([]);
-  const [selected, setSelected] = useState<TmdbSearchHit | null>(null);
+  const [hits, setHits] = useState<SearchHit[]>([]);
+  const [selected, setSelected] = useState<SearchHit | null>(null);
 
   const [recs, setRecs] = useState<Recommendation[]>([]);
   const top10 = useMemo(() => recs.slice(0, 10), [recs]);
@@ -68,7 +66,7 @@ export default function SearchBox() {
     }
 
     const j = await res.json();
-    // Expecting j.results items with poster_path; keep as-is
+    // Expecting { results: SearchHit[] }
     setHits(j.results ?? []);
   }
 
@@ -121,7 +119,7 @@ export default function SearchBox() {
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {top10.map((r) => {
-            const posterUrl = normalizePosterUrl(r.poster, "w185");
+            const posterUrl = normalizePosterUrl(r.poster ?? null, "w185");
             return (
               <div key={r.tmdbId} className="flex gap-3 rounded border p-3">
                 {posterUrl ? (
@@ -160,7 +158,7 @@ export default function SearchBox() {
     );
   }
 
-  // ✅ Search / selection UI (with poster cards)
+  // ✅ Search UI (shows poster + year + director)
   return (
     <div className="mt-2">
       <div className="flex gap-2">
@@ -181,14 +179,14 @@ export default function SearchBox() {
 
       {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
 
-      {/* Selected preview card (optional but helpful) */}
+      {/* Selected preview */}
       {selected && (
         <div className="mt-4 flex items-center justify-between rounded border p-3">
           <div className="flex min-w-0 items-center gap-3">
-            {tmdbPosterFromPath(selected.poster_path, "w92") ? (
+            {normalizePosterUrl(selected.poster, "w92") ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                src={tmdbPosterFromPath(selected.poster_path, "w92")!}
+                src={normalizePosterUrl(selected.poster, "w92")!}
                 alt={`${selected.title} poster`}
                 className="h-[84px] w-[56px] rounded object-cover"
                 loading="lazy"
@@ -196,10 +194,12 @@ export default function SearchBox() {
             ) : (
               <div className="h-[84px] w-[56px] rounded bg-zinc-100" />
             )}
+
             <div className="min-w-0">
               <div className="truncate font-medium">
-                {selected.title} <span className="opacity-60">({yearFromDate(selected.release_date)})</span>
+                {selected.title} <span className="opacity-60">({selected.year ?? "—"})</span>
               </div>
+              {selected.director && <div className="truncate text-sm opacity-70">{selected.director}</div>}
               <div className="text-xs opacity-60">TMDB ID: {selected.id}</div>
             </div>
           </div>
@@ -210,12 +210,11 @@ export default function SearchBox() {
         </div>
       )}
 
-      {/* Search results as cards */}
+      {/* Search hits */}
       <div className="mt-4 space-y-2">
-        {hits.slice(0, 8).map((h) => {
-          const year = yearFromDate(h.release_date);
+        {hits.slice(0, 10).map((h) => {
           const isSelected = selected?.id === h.id;
-          const posterUrl = tmdbPosterFromPath(h.poster_path, "w92");
+          const posterUrl = normalizePosterUrl(h.poster, "w92");
 
           return (
             <button
@@ -239,8 +238,9 @@ export default function SearchBox() {
 
               <div className="min-w-0">
                 <div className="truncate font-medium">
-                  {h.title} <span className="opacity-60">({year})</span>
+                  {h.title} <span className="opacity-60">({h.year ?? "—"})</span>
                 </div>
+                {h.director && <div className="truncate text-sm opacity-70">{h.director}</div>}
                 <div className="text-xs opacity-60">TMDB ID: {h.id}</div>
               </div>
             </button>
