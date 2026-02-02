@@ -3,6 +3,7 @@ export type TMDBSearchResult = {
   title: string;
   year: string | null;
   poster: string | null;
+  director?: string | null;
 };
 
 export type PersonRef = {
@@ -26,13 +27,11 @@ export type MovieRecord = {
 
   directors: PersonRef[];
   writers: PersonRef[];
-  castTop: PersonRef[]; // top billed
+  castTop: PersonRef[];
 
-  // Precomputed vectors/scores
-  feelVec: number[]; // computed on ingest
-  styleVec: number[]; // optional; can equal feelVec for now
+  feelVec: number[];
+  styleVec: number[];
 
-  // Augmentation
   imdb?: {
     rating: number | null;
     votes: number | null;
@@ -40,11 +39,10 @@ export type MovieRecord = {
     boxOffice: number | null;
   };
 
-  // Cached TMDB quality proxies (always present)
   tmdbVoteAverage: number | null;
   tmdbVoteCount: number | null;
 
-  updatedAt: number; // ms epoch
+  updatedAt: number;
 };
 
 export type RecBreakdown = {
@@ -64,12 +62,19 @@ export type Recommendation = {
   year: number | null;
   poster: string | null;
   directors: string;
-
   vote_average: number | null;
   vote_count: number | null;
 
-  /** One-line explanation of why this was recommended (derived from RecBreakdown). */
+  // ✅ explanations
   reason?: string;
+  reasonDetails?: string[];
 
+  // ✅ keep breakdown for debug + confidence bucketing
   breakdown: RecBreakdown;
+};
+
+// ✅ super-light user state
+export type UserActions = {
+  saved: number[];     // tmdbIds
+  disliked: number[];  // tmdbIds
 };
