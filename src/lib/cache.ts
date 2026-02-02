@@ -1,61 +1,92 @@
-import type { MovieRecord } from "./types";
+// lib/cache.ts
+import type { MovieRecord, UserActions } from "./types";
 
-type UserProfile = {
-  userId: string;
-  ratingsCount: number;
-  feelCentroid: number[] | null;
-  dirAff: Record<string, number>;
-  castAff: Record<string, number>;
-  decadeAff: Record<string, number>;
+/**
+ * In-memory cache (simple + reliable).
+ * If you later swap to Redis/DB, keep the same exported functions.
+ */
+
+type UserRecord = {
+  id: string;
+  createdAt: number;
+  actions: UserActions;
+  // You may already store more personalization data here; keep it additive.
+  // Example placeholders:
+  feelCentroid?: number[] | null;
+  directorAff?: Record<string, number>;
+  actorAff?: Record<string, number>;
+  decadeAff?: Record<string, number>;
 };
 
-declare global {
-  // eslint-disable-next-line no-var
-  var __FILMCLUB_CACHE__: {
-    moviesById: Map<number, MovieRecord>;
-    userById: Map<string, UserProfile>;
-  } | undefined;
+const moviesById = new Map<number, MovieRecord>();
+const usersById = new Map<string, UserRecord>();
+
+/** MOVIES */
+export function getMovie(tmdbId: number): MovieRecord | undefined {
+  return moviesById.get(tmdbId);
 }
 
-function getStore() {
-  if (!globalThis.__FILMCLUB_CACHE__) {
-    globalThis.__FILMCLUB_CACHE__ = {
-      moviesById: new Map<number, MovieRecord>(),
-      userById: new Map<string, UserProfile>()
-    };
-  }
-  return globalThis.__FILMCLUB_CACHE__;
+export function upsertMovie(movie: MovieRecord): void {
+  moviesById.set(movie.tmdbId, movie);
 }
 
-export function upsertMovie(m: MovieRecord) {
-  getStore().moviesById.set(m.tmdbId, m);
+export function getAllMovies(): MovieRecord[] {
+  return Array.from(moviesById.values());
 }
 
-export function getMovie(tmdbId: number) {
-  return getStore().moviesById.get(tmdbId) || null;
-}
+/** USERS */
+export function getOrCreateUser(userId: string): UserRecord {
+  const id = userId || "default";
+  const existing = usersById.get(id);
+  if (existing) return existing;
 
-export function getAllMovies() {
-  return Array.from(getStore().moviesById.values());
-}
-
-export function getOrCreateUser(userId: string): UserProfile {
-  const store = getStore();
-  const u = store.userById.get(userId);
-  if (u) return u;
-
-  const fresh: UserProfile = {
-    userId,
-    ratingsCount: 0,
-    feelCentroid: null,
-    dirAff: {},
-    castAff: {},
-    decadeAff: {}
+  const created: UserRecord = {
+    id,
+    createdAt: Date.now(),
+    actions: { saved: [], disliked: [] }
   };
-  store.userById.set(userId, fresh);
-  return fresh;
+
+  usersById.set(id, created);
+  return created;
 }
 
-export function saveUser(u: UserProfile) {
-  getStore().userById.set(u.userId, u);
+export function getUserActions(userId: string): UserActions {
+  const u = getOrCreateUser(userId);
+  // Defensive: if actions missing for any reason
+  u.actions = u.actions ?? { saved: [], disliked: [] };
+  return u.actions;
+}
+
+export function toggleUserSaved(userId: string, tmdbId: number): UserRecord {
+  const u = getOrCreateUser(userId);
+  u.actions = u.actions ?? { saved: [], disliked: [] };
+
+  const saved = new Set(u.actions.saved ?? []);
+  if (saved.has(tmdbId)) saved.delete(tmdbId);
+  else saved.add(tmdbId);
+
+  // If saved, ensure it is NOT disliked
+  const disliked = new Set(u.actions.disliked ?? []);
+  disliked.delete(tmdbId);
+
+  u.actions.saved = Array.from(saved);
+  u.actions.disliked = Array.from(disliked);
+  return u;
+}
+
+export function toggleUserDisliked(userId: string, tmdbId: number): UserRecord {
+  const u = getOrCreateUser(userId);
+  u.actions = u.actions ?? { saved: [], disliked: [] };
+
+  const disliked = new Set(u.actions.disliked ?? []);
+  if (disliked.has(tmdbId)) disliked.delete(tmdbId);
+  else disliked.add(tmdbId);
+
+  // If disliked, remove from saved
+  const saved = new Set(u.actions.saved ?? []);
+  saved.delete(tmdbId);
+
+  u.actions.saved = Array.from(saved);
+  u.actions.disliked = Array.from(disliked);
+  return u;
 }
