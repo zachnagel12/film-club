@@ -6,7 +6,12 @@ type Movie = {
   id: number;
   title: string;
   release_date?: string;
-  poster_path?: string | null;
+};
+
+type Rec = {
+  id: number;
+  title: string;
+  year?: number;
 };
 
 export default function GeneratePage() {
@@ -16,11 +21,17 @@ export default function GeneratePage() {
   const [results, setResults] = useState<Movie[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  const [selected, setSelected] = useState<Movie | null>(null);
+  const [recs, setRecs] = useState<Rec[]>([]);
+  const [recLoading, setRecLoading] = useState(false);
+
+  // debounce search
   useEffect(() => {
     const t = setTimeout(() => setDebounced(q.trim()), 250);
     return () => clearTimeout(t);
   }, [q]);
 
+  // search TMDB
   useEffect(() => {
     async function run() {
       if (!debounced) {
@@ -33,12 +44,12 @@ export default function GeneratePage() {
       setError(null);
 
       try {
-        const res = await fetch(`/api/tmdb/search?q=${encodeURIComponent(debounced)}`);
+        const res = await fetch(
+          `/api/tmdb/search?q=${encodeURIComponent(debounced)}`
+        );
         const data = await res.json();
 
-        if (!res.ok) {
-          throw new Error(data?.error || "Search failed");
-        }
+        if (!res.ok) throw new Error(data?.error || "Search failed");
 
         setResults(data.results || []);
       } catch (e: any) {
@@ -52,8 +63,20 @@ export default function GeneratePage() {
     run();
   }, [debounced]);
 
+  async function generateRecs(movie: Movie) {
+    setSelected(movie);
+    setRecLoading(true);
+    setRecs([]);
+
+    const res = await fetch(`/api/recommend?tmdbId=${movie.id}`);
+    const data = await res.json();
+
+    setRecs(data.recommendations || []);
+    setRecLoading(false);
+  }
+
   const helper = useMemo(() => {
-    if (!q) return "Type a movie title (e.g., The Irishman)";
+    if (!q) return "Type a movie title (e.g., Whiplash)";
     if (loading) return "Searching…";
     if (error) return error;
     if (results.length === 0) return "No results yet.";
@@ -75,27 +98,63 @@ export default function GeneratePage() {
             placeholder="Start typing…"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            autoComplete="off"
           />
           <div className="mt-2 text-sm text-white/60">{helper}</div>
         </div>
 
-        <div className="mt-6 space-y-3">
-          {results.map((m) => (
-            <button
-              key={m.id}
-              className="w-full text-left rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 transition px-4 py-3"
-              onClick={() => alert(`Selected: ${m.title} (TMDB id ${m.id})\n\nNext: generate recs.`)}
-            >
-              <div className="font-medium">
-                {m.title}
-                {m.release_date ? (
-                  <span className="text-white/50 font-normal"> • {m.release_date.slice(0, 4)}</span>
-                ) : null}
+        {/* SEARCH RESULTS */}
+        {!selected && (
+          <div className="mt-6 space-y-3">
+            {results.map((m) => (
+              <button
+                key={m.id}
+                className="w-full text-left rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 transition px-4 py-3"
+                onClick={() => generateRecs(m)}
+              >
+                <div className="font-medium">
+                  {m.title}
+                  {m.release_date && (
+                    <span className="text-white/50">
+                      {" "}
+                      • {m.release_date.slice(0, 4)}
+                    </span>
+                  )}
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* RECOMMENDATIONS */}
+        {selected && (
+          <div className="mt-10">
+            <h2 className="text-xl font-semibold">
+              Recommendations for {selected.title}
+            </h2>
+
+            {recLoading && (
+              <div className="mt-4 text-white/60">
+                Generating recommendations…
               </div>
-            </button>
-          ))}
-        </div>
+            )}
+
+            {!recLoading && (
+              <ul className="mt-4 space-y-3">
+                {recs.map((r) => (
+                  <li
+                    key={r.id}
+                    className="rounded-xl border border-white/10 bg-white/5 px-4 py-3"
+                  >
+                    {r.title}
+                    {r.year && (
+                      <span className="text-white/50"> • {r.year}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </div>
     </main>
   );
