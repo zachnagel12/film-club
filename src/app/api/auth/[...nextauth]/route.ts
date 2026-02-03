@@ -6,9 +6,7 @@ import { prisma } from "@/lib/prisma";
 export const runtime = "nodejs";
 
 const handler = NextAuth({
-  session: {
-    strategy: "jwt",
-  },
+  session: { strategy: "jwt" },
   providers: [
     CredentialsProvider({
       name: "Credentials",
@@ -17,28 +15,23 @@ const handler = NextAuth({
         password: { label: "Password", type: "password" },
       },
       async authorize(credentials) {
-        if (!credentials?.email || !credentials?.password) {
-          return null;
-        }
+        if (!credentials?.email || !credentials?.password) return null;
 
-        const email = credentials.email.toLowerCase();
+        const email = credentials.email.toLowerCase().trim();
 
         const user = await prisma.user.findUnique({
           where: { email },
         });
 
-        if (!user || !user.password) {
-          return null;
-        }
+        // ✅ YOUR SCHEMA USES passwordHash
+        if (!user || !user.passwordHash) return null;
 
         const isValid = await bcrypt.compare(
           credentials.password,
-          user.password
+          user.passwordHash
         );
 
-        if (!isValid) {
-          return null;
-        }
+        if (!isValid) return null;
 
         return {
           id: user.id,
