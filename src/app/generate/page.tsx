@@ -12,6 +12,8 @@ type Rec = {
   id: number;
   title: string;
   year?: number;
+  recScore?: number;
+  reasons?: string[];
 };
 
 export default function GeneratePage() {
@@ -24,14 +26,13 @@ export default function GeneratePage() {
   const [selected, setSelected] = useState<Movie | null>(null);
   const [recs, setRecs] = useState<Rec[]>([]);
   const [recLoading, setRecLoading] = useState(false);
+  const [recError, setRecError] = useState<string | null>(null);
 
-  // debounce search
   useEffect(() => {
     const t = setTimeout(() => setDebounced(q.trim()), 250);
     return () => clearTimeout(t);
   }, [q]);
 
-  // search TMDB
   useEffect(() => {
     async function run() {
       if (!debounced) {
@@ -48,9 +49,7 @@ export default function GeneratePage() {
           `/api/tmdb/search?q=${encodeURIComponent(debounced)}`
         );
         const data = await res.json();
-
         if (!res.ok) throw new Error(data?.error || "Search failed");
-
         setResults(data.results || []);
       } catch (e: any) {
         setError(e?.message || "Search failed");
@@ -66,13 +65,25 @@ export default function GeneratePage() {
   async function generateRecs(movie: Movie) {
     setSelected(movie);
     setRecLoading(true);
+    setRecError(null);
     setRecs([]);
 
-    const res = await fetch(`/api/recommend?tmdbId=${movie.id}`);
-    const data = await res.json();
+    try {
+      const res = await fetch(`/api/recommend?tmdbId=${movie.id}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Recommend failed");
+      setRecs(data.recommendations || []);
+    } catch (e: any) {
+      setRecError(e?.message || "Failed to generate recommendations");
+    } finally {
+      setRecLoading(false);
+    }
+  }
 
-    setRecs(data.recommendations || []);
-    setRecLoading(false);
+  function reset() {
+    setSelected(null);
+    setRecs([]);
+    setRecError(null);
   }
 
   const helper = useMemo(() => {
@@ -86,46 +97,59 @@ export default function GeneratePage() {
   return (
     <main className="min-h-screen bg-black text-white px-6 py-10">
       <div className="max-w-3xl mx-auto">
-        <h1 className="text-3xl font-semibold">Movie Recommendation Generator</h1>
-        <p className="text-white/60 mt-2">
-          Search a movie, select it, and we’ll generate recommendations.
-        </p>
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-semibold">Movie Recommendation Generator</h1>
+            <p className="text-white/60 mt-2">
+              Search a movie, select it, and we’ll generate recommendations.
+            </p>
+          </div>
 
-        <div className="mt-8">
-          <label className="text-sm text-white/70">Search</label>
-          <input
-            className="mt-2 w-full rounded-xl bg-black/40 border border-white/10 px-4 py-3 outline-none focus:border-white/30"
-            placeholder="Start typing…"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
-          <div className="mt-2 text-sm text-white/60">{helper}</div>
+          {selected && (
+            <button
+              onClick={reset}
+              className="rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 px-4 py-2"
+            >
+              ← New search
+            </button>
+          )}
         </div>
 
-        {/* SEARCH RESULTS */}
         {!selected && (
-          <div className="mt-6 space-y-3">
-            {results.map((m) => (
-              <button
-                key={m.id}
-                className="w-full text-left rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 transition px-4 py-3"
-                onClick={() => generateRecs(m)}
-              >
-                <div className="font-medium">
-                  {m.title}
-                  {m.release_date && (
-                    <span className="text-white/50">
-                      {" "}
-                      • {m.release_date.slice(0, 4)}
-                    </span>
-                  )}
-                </div>
-              </button>
-            ))}
-          </div>
+          <>
+            <div className="mt-8">
+              <label className="text-sm text-white/70">Search</label>
+              <input
+                className="mt-2 w-full rounded-xl bg-black/40 border border-white/10 px-4 py-3 outline-none focus:border-white/30"
+                placeholder="Start typing…"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+              />
+              <div className="mt-2 text-sm text-white/60">{helper}</div>
+            </div>
+
+            <div className="mt-6 space-y-3">
+              {results.map((m) => (
+                <button
+                  key={m.id}
+                  className="w-full text-left rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 transition px-4 py-3"
+                  onClick={() => generateRecs(m)}
+                >
+                  <div className="font-medium">
+                    {m.title}
+                    {m.release_date && (
+                      <span className="text-white/50">
+                        {" "}
+                        • {m.release_date.slice(0, 4)}
+                      </span>
+                    )}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </>
         )}
 
-        {/* RECOMMENDATIONS */}
         {selected && (
           <div className="mt-10">
             <h2 className="text-xl font-semibold">
@@ -138,17 +162,38 @@ export default function GeneratePage() {
               </div>
             )}
 
-            {!recLoading && (
+            {recError && (
+              <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm">
+                {recError}
+              </div>
+            )}
+
+            {!recLoading && !recError && (
               <ul className="mt-4 space-y-3">
-                {recs.map((r) => (
+                {recs.map((r, idx) => (
                   <li
                     key={r.id}
                     className="rounded-xl border border-white/10 bg-white/5 px-4 py-3"
                   >
-                    {r.title}
-                    {r.year && (
-                      <span className="text-white/50"> • {r.year}</span>
-                    )}
+                    <div className="flex items-baseline justify-between gap-3">
+                      <div className="font-medium">
+                        {idx + 1}. {r.title}
+                        {r.year ? (
+                          <span className="text-white/50 font-normal"> • {r.year}</span>
+                        ) : null}
+                      </div>
+                      {typeof r.recScore === "number" && (
+                        <div className="text-white/50 text-sm">
+                          score {r.recScore.toFixed(3)}
+                        </div>
+                      )}
+                    </div>
+
+                    {r.reasons?.length ? (
+                      <div className="mt-2 text-sm text-white/60">
+                        {r.reasons.join(" • ")}
+                      </div>
+                    ) : null}
                   </li>
                 ))}
               </ul>
