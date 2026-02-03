@@ -16,7 +16,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const normalizedEmail = email.toLowerCase();
+    const normalizedEmail = String(email).toLowerCase().trim();
 
     const existingUser = await prisma.user.findUnique({
       where: { email: normalizedEmail },
@@ -29,24 +29,24 @@ export async function POST(req: Request) {
       );
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const passwordHash = await bcrypt.hash(String(password), 10);
 
     const user = await prisma.user.create({
       data: {
-        name,
+        name: name ? String(name).trim() : null,
         email: normalizedEmail,
-        password: hashedPassword,
+        passwordHash,
+        // role is optional; only set it if your schema requires it
+        // role: "USER",
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
       },
     });
 
-    return NextResponse.json(
-      {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-      },
-      { status: 201 }
-    );
+    return NextResponse.json(user, { status: 201 });
   } catch (error) {
     console.error("REGISTER ERROR:", error);
     return NextResponse.json(
