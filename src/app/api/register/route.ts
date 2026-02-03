@@ -9,6 +9,7 @@ export async function POST(req: Request) {
     const body = await req.json();
     const { name, email, password } = body;
 
+    // 1) Validate
     if (!email || !password) {
       return NextResponse.json(
         { error: "Email and password are required" },
@@ -16,39 +17,44 @@ export async function POST(req: Request) {
       );
     }
 
+    // 2) Normalize email
     const normalizedEmail = String(email).toLowerCase().trim();
 
-    const existingUser = await prisma.user.findUnique({
+    // 3) Check if user exists
+    const existing = await prisma.user.findUnique({
       where: { email: normalizedEmail },
     });
 
-    if (existingUser) {
+    if (existing) {
       return NextResponse.json(
         { error: "User already exists" },
         { status: 409 }
       );
     }
 
+    // 4) Hash password into passwordHash (matches your schema)
     const passwordHash = await bcrypt.hash(String(password), 10);
 
+    // 5) Create user
     const user = await prisma.user.create({
       data: {
-        name: name ? String(name).trim() : null,
         email: normalizedEmail,
         passwordHash,
-        // role is optional; only set it if your schema requires it
-        // role: "USER",
+        name: name ? String(name).trim() : null,
+        // role defaults to USER automatically in your schema
       },
       select: {
         id: true,
-        name: true,
         email: true,
+        name: true,
+        role: true,
       },
     });
 
+    // 6) Return safe user data (no passwordHash)
     return NextResponse.json(user, { status: 201 });
-  } catch (error) {
-    console.error("REGISTER ERROR:", error);
+  } catch (err) {
+    console.error("REGISTER ERROR:", err);
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 }
