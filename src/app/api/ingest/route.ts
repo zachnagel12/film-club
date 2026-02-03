@@ -28,11 +28,6 @@ function tmdbPoster(full: TmdbMovie): string {
   return p || "";
 }
 
-/**
- * Build "person-like" objects from TMDB credits.
- * We intentionally do NOT import PersonRef (not exported by lib/cache).
- * We pass the right shape and cast to satisfy the MovieRecord type expected by upsertMovie.
- */
 function directorsFromTmdb(full: TmdbMovie) {
   const crew = full.credits?.crew || [];
   return crew
@@ -68,22 +63,20 @@ async function ingestByTmdbId(tmdbId: number) {
   // 4) Required MovieRecord fields
   const poster = tmdbPoster(full);
 
-  // These must match PersonRef[] in MovieRecord.
-  // We provide {id,name} objects and cast to avoid importing non-exported types.
+  // These are PersonRef[] in your MovieRecord type; we provide {id,name} objects.
   const directors = directorsFromTmdb(full) as any;
   const writers = writersFromTmdb(full) as any;
   const castTop = castTopFromTmdb(full, 8) as any;
 
-  // updatedAt might be Date or string depending on your MovieRecord.
-  // Date is safer for TS if it's Date; if your type is string, it will still serialize.
+  // updatedAt might be Date in your MovieRecord
   const updatedAt = new Date() as any;
 
   // 5) Vectors
   const feelVec = feelVectorFromText(base.overview, base.tagline, 256);
   const styleVec = feelVec; // placeholder
 
-  // 6) Upsert
-  const saved = await upsertMovie({
+  // 6) Construct full record we will upsert
+  const record = {
     ...base,
     poster,
     directors,
@@ -92,18 +85,22 @@ async function ingestByTmdbId(tmdbId: number) {
     feelVec,
     styleVec,
     updatedAt,
-  } as any);
+  } as any;
 
-  // 7) IMDb augment async
-  (async () => {
+  // 7) Upsert (your upsertMovie returns void, so don’t expect a return)
+  await upsertMovie(record);
+
+  // 8) IMDb augment expects a tmdbId number (per your compile error)
+  ;(async () => {
     try {
-      await fetchIMDbAugment(saved);
+      await fetchIMDbAugment(tmdbId);
     } catch (e) {
       console.error("IMDb augment failed:", e);
     }
   })();
 
-  return { cached: false, movie: saved };
+  // 9) Return the record we created
+  return { cached: false, movie: record };
 }
 
 export async function GET(req: NextRequest) {
