@@ -6,6 +6,7 @@ type Movie = {
   id: number;
   title: string;
   release_date?: string;
+  poster_path?: string | null;
 };
 
 type Rec = {
@@ -14,7 +15,19 @@ type Rec = {
   year?: number;
   recScore?: number;
   reasons?: string[];
+  poster?: string; // from ingest/cache or TMDB path
+  poster_path?: string | null; // if your /api/recommend ever returns it
 };
+
+function tmdbPosterUrl(path?: string | null, size: "w92" | "w154" | "w185" | "w342" = "w154") {
+  if (!path) return null;
+  return `https://image.tmdb.org/t/p/${size}${path}`;
+}
+
+function Year({ date }: { date?: string }) {
+  if (!date || date.length < 4) return null;
+  return <span className="text-white/50"> • {date.slice(0, 4)}</span>;
+}
 
 export default function GeneratePage() {
   const [q, setQ] = useState("");
@@ -69,9 +82,13 @@ export default function GeneratePage() {
     setRecs([]);
 
     try {
+      // Optional: ingest first so we definitely have poster + cached record
+      await fetch(`/api/ingest?tmdbId=${movie.id}`);
+
       const res = await fetch(`/api/recommend?tmdbId=${movie.id}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Recommend failed");
+
       setRecs(data.recommendations || []);
     } catch (e: any) {
       setRecError(e?.message || "Failed to generate recommendations");
@@ -129,23 +146,46 @@ export default function GeneratePage() {
             </div>
 
             <div className="mt-6 space-y-3">
-              {results.map((m) => (
-                <button
-                  key={m.id}
-                  className="w-full text-left rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 transition px-4 py-3"
-                  onClick={() => generateRecs(m)}
-                >
-                  <div className="font-medium">
-                    {m.title}
-                    {m.release_date && (
-                      <span className="text-white/50">
-                        {" "}
-                        • {m.release_date.slice(0, 4)}
-                      </span>
-                    )}
-                  </div>
-                </button>
-              ))}
+              {results.map((m) => {
+                const posterUrl = tmdbPosterUrl(m.poster_path, "w92");
+                return (
+                  <button
+                    key={m.id}
+                    className="w-full text-left rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 transition px-4 py-3"
+                    onClick={() => generateRecs(m)}
+                  >
+                    <div className="flex items-center gap-4">
+                      {/* Poster */}
+                      <div className="h-16 w-12 rounded-lg overflow-hidden bg-white/10 flex-shrink-0">
+                        {posterUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={posterUrl}
+                            alt={`${m.title} poster`}
+                            className="h-full w-full object-cover"
+                            loading="lazy"
+                          />
+                        ) : (
+                          <div className="h-full w-full flex items-center justify-center text-[10px] text-white/40">
+                            No poster
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Text */}
+                      <div>
+                        <div className="font-medium">
+                          {m.title}
+                          <Year date={m.release_date} />
+                        </div>
+                        <div className="text-sm text-white/50">
+                          TMDB #{m.id}
+                        </div>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </>
         )}
@@ -170,32 +210,65 @@ export default function GeneratePage() {
 
             {!recLoading && !recError && (
               <ul className="mt-4 space-y-3">
-                {recs.map((r, idx) => (
-                  <li
-                    key={r.id}
-                    className="rounded-xl border border-white/10 bg-white/5 px-4 py-3"
-                  >
-                    <div className="flex items-baseline justify-between gap-3">
-                      <div className="font-medium">
-                        {idx + 1}. {r.title}
-                        {r.year ? (
-                          <span className="text-white/50 font-normal"> • {r.year}</span>
-                        ) : null}
-                      </div>
-                      {typeof r.recScore === "number" && (
-                        <div className="text-white/50 text-sm">
-                          score {r.recScore.toFixed(3)}
-                        </div>
-                      )}
-                    </div>
+                {recs.map((r, idx) => {
+                  // r.poster in your cache is the TMDB poster_path (we stored it that way)
+                  const posterUrl =
+                    tmdbPosterUrl((r as any).poster_path, "w92") ||
+                    tmdbPosterUrl((r as any).poster, "w92") ||
+                    null;
 
-                    {r.reasons?.length ? (
-                      <div className="mt-2 text-sm text-white/60">
-                        {r.reasons.join(" • ")}
+                  return (
+                    <li
+                      key={r.id}
+                      className="rounded-xl border border-white/10 bg-white/5 px-4 py-3"
+                    >
+                      <div className="flex items-center gap-4">
+                        {/* Poster */}
+                        <div className="h-16 w-12 rounded-lg overflow-hidden bg-white/10 flex-shrink-0">
+                          {posterUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={posterUrl}
+                              alt={`${r.title} poster`}
+                              className="h-full w-full object-cover"
+                              loading="lazy"
+                            />
+                          ) : (
+                            <div className="h-full w-full flex items-center justify-center text-[10px] text-white/40">
+                              No poster
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Info */}
+                        <div className="flex-1">
+                          <div className="flex items-baseline justify-between gap-3">
+                            <div className="font-medium">
+                              {idx + 1}. {r.title}
+                              {r.year ? (
+                                <span className="text-white/50 font-normal">
+                                  {" "}
+                                  • {r.year}
+                                </span>
+                              ) : null}
+                            </div>
+                            {typeof r.recScore === "number" && (
+                              <div className="text-white/50 text-sm">
+                                score {r.recScore.toFixed(3)}
+                              </div>
+                            )}
+                          </div>
+
+                          {r.reasons?.length ? (
+                            <div className="mt-2 text-sm text-white/60">
+                              {r.reasons.join(" • ")}
+                            </div>
+                          ) : null}
+                        </div>
                       </div>
-                    ) : null}
-                  </li>
-                ))}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
@@ -204,3 +277,4 @@ export default function GeneratePage() {
     </main>
   );
 }
+
