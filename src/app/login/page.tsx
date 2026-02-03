@@ -2,129 +2,102 @@
 
 import { useState } from "react";
 import { signIn } from "next-auth/react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 export default function LoginPage() {
   const router = useRouter();
-  const [mode, setMode] = useState<"login" | "register">("login");
-  const [name, setName] = useState("");
+  const searchParams = useSearchParams();
+
+  const callbackUrl = searchParams.get("callbackUrl") || "/";
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [msg, setMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  async function register() {
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
     setLoading(true);
-    setMsg(null);
-    try {
-      const res = await fetch("/api/register", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, email, password }),
-      });
-      const data = await res.json();
+    setErrorMsg(null);
 
-      if (!res.ok) {
-        setMsg(data?.error ?? "Registration failed.");
-        return;
-      }
+    const res = await signIn("credentials", {
+      email,
+      password,
+      redirect: false, // we control redirect manually
+      callbackUrl,     // default "/"
+    });
 
-      const r = await signIn("credentials", {
-        redirect: false,
-        email,
-        password,
-      });
+    setLoading(false);
 
-      if (r?.error) {
-        setMsg("Created account, but login failed.");
-        return;
-      }
-
-      router.push("/dashboard");
-    } finally {
-      setLoading(false);
+    if (!res) {
+      setErrorMsg("Login failed. Please try again.");
+      return;
     }
-  }
 
-  async function login() {
-    setLoading(true);
-    setMsg(null);
-    try {
-      const r = await signIn("credentials", {
-        redirect: false,
-        email,
-        password,
-      });
-
-      if (r?.error) {
-        setMsg("Invalid email or password.");
-        return;
-      }
-
-      router.push("/dashboard");
-    } finally {
-      setLoading(false);
+    if (res.error) {
+      setErrorMsg("Invalid email or password.");
+      return;
     }
+
+    // Success -> go to movie rec generator
+    router.push(res.url || "/");
+    router.refresh();
   }
 
   return (
-    <div className="mx-auto mt-20 max-w-md rounded-2xl border border-white/10 bg-white/5 p-6">
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight">Film Club</h1>
-        <p className="text-sm text-white/70">
-          {mode === "login" ? "Log in" : "Create an account"}
-        </p>
-      </div>
+    <div className="min-h-screen bg-black text-white flex items-center justify-center px-6">
+      <div className="w-full max-w-md border border-white/10 rounded-2xl p-6 bg-white/5">
+        <h1 className="text-2xl font-semibold mb-2">Login</h1>
+        <p className="text-white/60 mb-6">Sign in to Film Club.</p>
 
-      {mode === "register" && (
-        <div className="mb-3">
-          <label className="mb-1 block text-sm text-white/80">Name</label>
-          <input
-            className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-white outline-none"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Your name"
-          />
+        {errorMsg && (
+          <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm">
+            {errorMsg}
+          </div>
+        )}
+
+        <form onSubmit={onSubmit} className="space-y-4">
+          <div className="space-y-2">
+            <label className="text-sm text-white/70">Email</label>
+            <input
+              className="w-full rounded-lg bg-black/40 border border-white/10 px-3 py-2 outline-none focus:border-white/30"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="email"
+              required
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm text-white/70">Password</label>
+            <input
+              className="w-full rounded-lg bg-black/40 border border-white/10 px-3 py-2 outline-none focus:border-white/30"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+              required
+            />
+          </div>
+
+          <button
+            className="w-full rounded-lg bg-white text-black py-2 font-medium disabled:opacity-60"
+            type="submit"
+            disabled={loading}
+          >
+            {loading ? "Signing in..." : "Sign in"}
+          </button>
+        </form>
+
+        <div className="mt-6 text-sm text-white/60">
+          Don’t have an account?{" "}
+          <a className="text-white underline" href="/register">
+            Create one
+          </a>
         </div>
-      )}
-
-      <div className="mb-3">
-        <label className="mb-1 block text-sm text-white/80">Email</label>
-        <input
-          className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-white outline-none"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="you@email.com"
-        />
       </div>
-
-      <div className="mb-4">
-        <label className="mb-1 block text-sm text-white/80">Password</label>
-        <input
-          className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-white outline-none"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          type="password"
-          placeholder="Min 8 characters"
-        />
-      </div>
-
-      {msg && <div className="mb-3 text-sm text-red-300">{msg}</div>}
-
-      <button
-        onClick={mode === "login" ? login : register}
-        disabled={loading}
-        className="w-full rounded-lg bg-white px-3 py-2 text-sm font-semibold text-black disabled:opacity-60"
-      >
-        {loading ? "Working..." : mode === "login" ? "Log in" : "Create account"}
-      </button>
-
-      <button
-        onClick={() => setMode(mode === "login" ? "register" : "login")}
-        className="mt-3 w-full text-sm text-white/70 underline"
-      >
-        {mode === "login" ? "Need an account?" : "Already have an account?"}
-      </button>
     </div>
   );
 }
+
