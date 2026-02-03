@@ -101,4 +101,153 @@ function scoreCandidate(seed: TmdbMovie, cand: TmdbMovie) {
     [...genreIds(cand), ...keywordIds(cand)]
   );
 
-  /
+  // Quality proxy (TMDB rating + vote_count confidence)
+  const va = cand.vote_average ?? 6.5;
+  const vc = cand.vote_count ?? 0;
+  const conf = clamp01(vc / 1500); // saturates around ~1500 votes
+  const quality = clamp01(sigmoid((va - 6.8) / 0.6) * (0.6 + 0.4 * conf));
+
+  // Map to your v2 weights (DirectionSim simplified to DirectorMatch only; StyleSim runtime-only)
+  const directionSim = directorMatch; // 0..1
+  const styleSim = rSim;              // 0..1
+
+  const recScore =
+    0.60 * feelSim +
+    0.15 * directionSim +
+    0.10 * styleSim +
+    0.07 * dFit +
+    0.05 * actingSim +
+    0.03 * quality +
+    0.05 * worldSim;
+
+  const reasons: string[] = [];
+  if (feelSim > 0.78) reasons.push("Similar vibe (overview/tagline)");
+  if (directorMatch === 1) reasons.push("Same director");
+  if (actingSim > 0) reasons.push(`Shared cast (${Math.min(sharedCast, 3)}+)`);
+  if (dFit > 0.75) reasons.push("Close release era");
+  if (worldSim > 0.25) reasons.push("Genre/keyword overlap");
+  if (quality > 0.75) reasons.push("High audience signal");
+
+  return {
+    recScore,
+    reasons,
+    debug: { feelSim, directorMatch, styleSim, dFit, actingSim, quality, worldSim },
+  };
+}
+
+type TmdbListResp = { results: any[] };
+
+async function fetchFullMovie(tmdbId: number): Promise<TmdbMovie> {
+  // append credits + keywords in one call
+  return await tmdbGet<TmdbMovie>(`/movie/${tmdbId}`, {
+    append_to_response: "credits,keywords",
+    language: "en-US",
+  });
+}
+
+async function fetchCandidates(seed: TmdbMovie) {
+  const seedId = seed.id;
+
+  // 1) TMDB rec/similar (fast + relevant)
+  const [recs, sims] = await Promise.all([
+    tmdbGet<TmdbListResp>(`/movie/${seedId}/recommendations`, { language: "en-US", page: 1 }),
+    tmdbGet<TmdbListResp>(`/movie/${seedId}/similar`, { language: "en-US", page: 1 }),
+  ]);
+
+  // 2) “world glue” discover by top genres/keywords (coverage)
+  const g = (seed.genres || []).slice(0, 2).map((x) => x.id);
+  const kw = (seed.keywords?.keywords || []).slice(0, 3).map((x) => x.id);
+
+  const discover = await tmdbGet<TmdbListResp>(`/discover/movie`, {
+    language: "en-US",
+    sort_by: "popularity.desc",
+    include_adult: false,
+    page: 1,
+    with_genres: g.length ? g.join(",") : undefined,
+    with_keywords: kw.length ? kw.join(",") : undefined,
+  });
+
+  // 3) “surprise bridge” director/lead actor
+  const dirId = pickDirectorId(seed);
+  const leadActor = (seed.credits?.cast || []).slice().sort((a, b) => a.order - b.order)[0]?.id;
+
+  const bridge = await tmdbGet<TmdbListResp>(`/discover/movie`, {
+    language: "en-US",
+    sort_by: "popularity.desc",
+    include_adult: false,
+    page: 1,
+    with_people: [dirId, leadActor].filter(Boolean).join(",") || undefined,
+  });
+
+  // Combine + dedupe IDs, exclude seed
+  const ids = new Set<number>();
+  for (const arr of [recs.results, sims.results, discover.results, bridge.results]) {
+    for (const m of arr) {
+      if (!m?.id) continue;
+      if (m.id === seedId) continue;
+      ids.add(m.id);
+    }
+  }
+
+  // Limit to avoid timeouts
+  return Array.from(ids).slice(0, 60);
+}
+
+export async function GET(req: Request) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const tmdbIdStr = searchParams.get("tmdbId");
+    const tmdbId = tmdbIdStr ? Number(tmdbIdStr) : NaN;
+
+    if (!Number.isFinite(tmdbId)) {
+      return NextResponse.json({ error: "tmdbId required" }, { status: 400 });
+    }
+
+    const seed = await fetchFullMovie(tmdbId);
+
+    const candidateIds = await fetchCandidates(seed);
+
+    // Fetch full data for candidates (parallel, but not too many)
+    const candidates = await Promise.all(candidateIds.map((id) => fetchFullMovie(id)));
+
+    // Score + sort
+    const scored = candidates
+      .map((c) => {
+        const s = scoreCandidate(seed, c);
+        return {
+          id: c.id,
+          title: c.title,
+          year: yearFromDate(c.release_date),
+          recScore: Number(s.recScore.toFixed(4)),
+          reasons: s.reasons.slice(0, 3),
+        };
+      })
+      .sort((a, b) => b.recScore - a.recScore);
+
+    // Diversity: max 2 same director in top 10 (simple enforcement)
+    const top: typeof scored = [];
+    const dirCounts = new Map<number, number>();
+    for (const r of scored) {
+      if (top.length >= 10) break;
+      const full = candidates.find((c) => c.id === r.id);
+      const d = full ? pickDirectorId(full) : undefined;
+      if (d) {
+        const n = dirCounts.get(d) || 0;
+        if (n >= 2) continue;
+        dirCounts.set(d, n + 1);
+      }
+      top.push(r);
+    }
+
+    return NextResponse.json({
+      seed: { id: seed.id, title: seed.title, year: yearFromDate(seed.release_date) },
+      recommendations: top,
+    });
+  } catch (err: any) {
+    console.error("RECOMMEND ERROR:", err);
+    return NextResponse.json(
+      { error: err?.message || "Failed to generate recommendations" },
+      { status: 500 }
+    );
+  }
+}
