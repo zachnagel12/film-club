@@ -1,46 +1,106 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getMovie, upsertMovie } from "../../../lib/cache";
-import { buildMovieRecordBase, tmdbFetchFull } from "../../../lib/tmdb";
+import { buildMovieRecordBase, tmdbFetchFull, type TmdbMovie } from "../../../lib/tmdb";
 import { feelVectorFromText } from "../../../lib/embeddings";
 import { fetchIMDbAugment } from "../../../lib/imdb";
 
-export async function POST(req: NextRequest) {
-  try {
-    const tmdbId = Number(req.nextUrl.searchParams.get("tmdbId"));
-    if (!tmdbId) return NextResponse.json({ error: "Missing tmdbId" }, { status: 400 });
+export const runtime = "nodejs";
 
-    const existing = getMovie(tmdbId);
-    if (existing) {
-      return NextResponse.json({ ok: true, cached: true });
+function parseTmdbIdFromRequest(req: NextRequest): number | null {
+  const tmdbIdStr = req.nextUrl.searchParams.get("tmdbId");
+  if (!tmdbIdStr) return null;
+
+  const n = Number(tmdbIdStr);
+  return Number.isFinite(n) ? n : null;
+}
+
+async function parseTmdbIdFromBody(req: NextRequest): Promise<number | null> {
+  try {
+    const body = await req.json();
+    const n = Number(body?.tmdbId);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+async function ingestByTmdbId(tmdbId: number) {
+  // 1) Check cache first (your cache layer decides the shape)
+  const existing = await getMovie(tmdbId);
+  if (existing) {
+    return { cached: true, movie: existing };
+  }
+
+  // 2) Fetch full TMDB payload
+  const full = await tmdbFetchFull(tmdbId);
+
+  // 3) Build base record (IMPORTANT: avoid object-literal type inference issues)
+  const input: { tmdbId: number; full: TmdbMovie } = { tmdbId, full };
+  const base = buildMovieRecordBase(input);
+
+  // 4) Compute vectors (feel + style placeholder)
+  const feelVec = feelVectorFromText(base.overview, base.tagline, 256);
+  const styleVec = feelVec; // placeholder per architecture
+
+  // 5) Upsert into cache/DB
+  const saved = await upsertMovie({
+    ...base,
+    feelVec,
+    styleVec,
+  });
+
+  // 6) Fire-and-forget IMDb augment (don’t block response)
+  //    If your imdb pipeline expects tmdbId + imdbId, we pass what we have.
+  //    Wrap in try/catch so ingestion never fails because IMDb fails.
+  (async () => {
+    try {
+      await fetchIMDbAugment(saved);
+    } catch (e) {
+      console.error("IMDb augment failed:", e);
+    }
+  })();
+
+  return { cached: false, movie: saved };
+}
+
+export async function GET(req: NextRequest) {
+  try {
+    const tmdbId = parseTmdbIdFromRequest(req);
+    if (!tmdbId) {
+      return NextResponse.json(
+        { error: "tmdbId is required. Use /api/ingest?tmdbId=123" },
+        { status: 400 }
+      );
     }
 
-    const full = await tmdbFetchFull(tmdbId);
-    const base = buildMovieRecordBase({ tmdbId, full });
+    const result = await ingestByTmdbId(tmdbId);
+    return NextResponse.json(result);
+  } catch (err: any) {
+    console.error("INGEST GET ERROR:", err);
+    return NextResponse.json(
+      { error: err?.message || "Ingest failed" },
+      { status: 500 }
+    );
+  }
+}
 
-    const feelVec = feelVectorFromText(base.overview, base.tagline, 256);
-    const styleVec = feelVec; // placeholder; keep architecture
+export async function POST(req: NextRequest) {
+  try {
+    const tmdbId = await parseTmdbIdFromBody(req);
+    if (!tmdbId) {
+      return NextResponse.json(
+        { error: "tmdbId is required in JSON body: { tmdbId: 123 }" },
+        { status: 400 }
+      );
+    }
 
-    const record = {
-      ...base,
-      feelVec,
-      styleVec,
-      updatedAt: Date.now()
-    };
-
-    upsertMovie(record);
-
-    // Async augmentation (don’t block)
-    fetchIMDbAugment(tmdbId)
-      .then((aug) => {
-        if (!aug) return;
-        const cur = getMovie(tmdbId);
-        if (!cur) return;
-        upsertMovie({ ...cur, imdb: aug, updatedAt: Date.now() });
-      })
-      .catch(() => {});
-
-    return NextResponse.json({ ok: true, cached: false });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message || String(e) }, { status: 500 });
+    const result = await ingestByTmdbId(tmdbId);
+    return NextResponse.json(result);
+  } catch (err: any) {
+    console.error("INGEST POST ERROR:", err);
+    return NextResponse.json(
+      { error: err?.message || "Ingest failed" },
+      { status: 500 }
+    );
   }
 }
