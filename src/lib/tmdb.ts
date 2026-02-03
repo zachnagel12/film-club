@@ -9,12 +9,16 @@ export type TmdbMovie = {
   runtime?: number | null;
   vote_average?: number;
   vote_count?: number;
+
   genres?: { id: number; name: string }[];
+
   credits?: {
     cast?: { id: number; name: string; order: number }[];
     crew?: { id: number; name: string; job: string; department: string }[];
   };
+
   keywords?: { keywords?: { id: number; name: string }[] };
+
   external_ids?: {
     imdb_id?: string | null;
   };
@@ -22,6 +26,10 @@ export type TmdbMovie = {
 
 const TMDB_BASE = "https://api.themoviedb.org/3";
 
+/**
+ * Generic TMDB GET using v3 API key (?api_key=...).
+ * IMPORTANT: TMDB_API_KEY must be your v3 key (32 hex chars).
+ */
 export async function tmdbGet<T>(
   path: string,
   params: Record<string, string | number | boolean | undefined> = {}
@@ -75,8 +83,10 @@ export function keywordIds(m: TmdbMovie): number[] {
 }
 
 /**
- * ✅ COMPAT EXPORT (your existing /api/ingest expects this name)
- * Fetches a "full" TMDB movie payload (details + credits + keywords + external_ids)
+ * ✅ Compatibility export for your existing ingest route:
+ * import { tmdbFetchFull } from "../../../lib/tmdb";
+ *
+ * Fetch details + credits + keywords + external_ids in one shot.
  */
 export async function tmdbFetchFull(tmdbId: number): Promise<TmdbMovie> {
   return await tmdbGet<TmdbMovie>(`/movie/${tmdbId}`, {
@@ -86,33 +96,50 @@ export async function tmdbFetchFull(tmdbId: number): Promise<TmdbMovie> {
 }
 
 /**
- * ✅ COMPAT EXPORT (your existing /api/ingest expects this name)
- * Builds a base record shape from a full TMDB movie payload.
+ * ✅ Compatibility export for your existing ingest route:
+ * import { buildMovieRecordBase } from "../../../lib/tmdb";
  *
- * NOTE: I’m intentionally returning a flexible object so it won’t fight your
- * existing Prisma model / cache layer types.
+ * Your code calls:
+ *   buildMovieRecordBase({ tmdbId, full })
+ *
+ * Other code may call:
+ *   buildMovieRecordBase(full)
+ *
+ * So we accept BOTH.
  */
-export function buildMovieRecordBase(full: TmdbMovie) {
+export function buildMovieRecordBase(
+  input: TmdbMovie | { tmdbId: number; full: TmdbMovie }
+) {
+  const full =
+    (input as any)?.full && typeof (input as any)?.full === "object"
+      ? ((input as any).full as TmdbMovie)
+      : (input as TmdbMovie);
+
   const year = yearFromDate(full.release_date);
 
   return {
+    // Use TMDB payload as source of truth
     tmdbId: full.id,
+
     title: full.title,
     year,
     runtime: full.runtime ?? null,
+
     overview: full.overview ?? "",
     tagline: full.tagline ?? "",
+
     tmdbVoteAverage: full.vote_average ?? null,
     tmdbVoteCount: full.vote_count ?? null,
+
     imdbId: full.external_ids?.imdb_id ?? null,
 
-    // store ids for similarity & glue
+    // for similarity / glue / later embedding computation
     genreIds: genreIds(full),
     keywordIds: keywordIds(full),
     directorId: pickDirectorId(full) ?? null,
     topCastIds: topCastIds(full, 8),
 
-    // optional “raw” names if you use them anywhere
+    // optional human-readable fields (handy for debugging / UI)
     genres: (full.genres || []).map((g) => g.name),
     keywords: (full.keywords?.keywords || []).map((k) => k.name),
   };
