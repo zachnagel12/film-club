@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import {
-  TmdbMovie,
   tmdbGet,
+  tmdbFetchFull,
+  type TmdbMovie,
   yearFromDate,
   pickDirectorId,
   topCastIds,
@@ -12,7 +13,7 @@ import {
 export const runtime = "nodejs";
 
 // --------------------
-// tiny “feel embedding” stand-in (overview+tagline text cosine)
+// tiny “feel embedding” stand-in (overview+tagline cosine)
 // --------------------
 function tokenize(s: string) {
   return s
@@ -22,7 +23,7 @@ function tokenize(s: string) {
     .filter(Boolean);
 }
 
-// hashing trick vector
+// hashing-trick vector
 function textVector(s: string, dims = 256) {
   const v = new Array(dims).fill(0);
   const toks = tokenize(s);
@@ -49,6 +50,10 @@ function sigmoid(x: number) {
   return 1 / (1 + Math.exp(-x));
 }
 
+function clamp01(x: number) {
+  return Math.max(0, Math.min(1, x));
+}
+
 function jaccard(a: number[], b: number[]) {
   const A = new Set(a);
   const B = new Set(b);
@@ -56,10 +61,6 @@ function jaccard(a: number[], b: number[]) {
   for (const x of A) if (B.has(x)) inter++;
   const union = A.size + B.size - inter;
   return union === 0 ? 0 : inter / union;
-}
-
-function clamp01(x: number) {
-  return Math.max(0, Math.min(1, x));
 }
 
 function decadeFit(yA?: number, yB?: number) {
@@ -79,7 +80,10 @@ function scoreCandidate(seed: TmdbMovie, cand: TmdbMovie) {
   const seedText = `${seed.overview || ""} ${seed.tagline || ""}`.trim();
   const candText = `${cand.overview || ""} ${cand.tagline || ""}`.trim();
 
-  const feelSim = seedText && candText ? (1 + cosine(textVector(seedText), textVector(candText))) / 2 : 0.5;
+  const feelSim =
+    seedText && candText
+      ? (1 + cosine(textVector(seedText), textVector(candText))) / 2
+      : 0.5;
 
   const seedDir = pickDirectorId(seed);
   const candDir = pickDirectorId(cand);
@@ -104,12 +108,12 @@ function scoreCandidate(seed: TmdbMovie, cand: TmdbMovie) {
   // Quality proxy (TMDB rating + vote_count confidence)
   const va = cand.vote_average ?? 6.5;
   const vc = cand.vote_count ?? 0;
-  const conf = clamp01(vc / 1500); // saturates around ~1500 votes
+  const conf = clamp01(vc / 1500);
   const quality = clamp01(sigmoid((va - 6.8) / 0.6) * (0.6 + 0.4 * conf));
 
-  // Map to your v2 weights (DirectionSim simplified to DirectorMatch only; StyleSim runtime-only)
-  const directionSim = directorMatch; // 0..1
-  const styleSim = rSim;              // 0..1
+  // DirectionSim simplified to DirectorMatch only; StyleSim runtime-only
+  const directionSim = directorMatch;
+  const styleSim = rSim;
 
   const recScore =
     0.60 * feelSim +
@@ -131,30 +135,27 @@ function scoreCandidate(seed: TmdbMovie, cand: TmdbMovie) {
   return {
     recScore,
     reasons,
-    debug: { feelSim, directorMatch, styleSim, dFit, actingSim, quality, worldSim },
   };
 }
 
-type TmdbListResp = { results: any[] };
-
-async function fetchFullMovie(tmdbId: number): Promise<TmdbMovie> {
-  // append credits + keywords in one call
-  return await tmdbGet<TmdbMovie>(`/movie/${tmdbId}`, {
-    append_to_response: "credits,keywords",
-    language: "en-US",
-  });
-}
+type TmdbListResp = { results: { id: number }[] };
 
 async function fetchCandidates(seed: TmdbMovie) {
   const seedId = seed.id;
 
-  // 1) TMDB rec/similar (fast + relevant)
+  // 1) TMDB rec/similar
   const [recs, sims] = await Promise.all([
-    tmdbGet<TmdbListResp>(`/movie/${seedId}/recommendations`, { language: "en-US", page: 1 }),
-    tmdbGet<TmdbListResp>(`/movie/${seedId}/similar`, { language: "en-US", page: 1 }),
+    tmdbGet<TmdbListResp>(`/movie/${seedId}/recommendations`, {
+      language: "en-US",
+      page: 1,
+    }),
+    tmdbGet<TmdbListResp>(`/movie/${seedId}/similar`, {
+      language: "en-US",
+      page: 1,
+    }),
   ]);
 
-  // 2) “world glue” discover by top genres/keywords (coverage)
+  // 2) World glue discover by top genres/keywords
   const g = (seed.genres || []).slice(0, 2).map((x) => x.id);
   const kw = (seed.keywords?.keywords || []).slice(0, 3).map((x) => x.id);
 
@@ -167,9 +168,11 @@ async function fetchCandidates(seed: TmdbMovie) {
     with_keywords: kw.length ? kw.join(",") : undefined,
   });
 
-  // 3) “surprise bridge” director/lead actor
+  // 3) Surprise bridge: director + lead actor
   const dirId = pickDirectorId(seed);
-  const leadActor = (seed.credits?.cast || []).slice().sort((a, b) => a.order - b.order)[0]?.id;
+  const leadActor = (seed.credits?.cast || [])
+    .slice()
+    .sort((a, b) => a.order - b.order)[0]?.id;
 
   const bridge = await tmdbGet<TmdbListResp>(`/discover/movie`, {
     language: "en-US",
@@ -193,6 +196,12 @@ async function fetchCandidates(seed: TmdbMovie) {
   return Array.from(ids).slice(0, 60);
 }
 
+function posterPathFromMovie(m: TmdbMovie): string | null {
+  // poster_path isn't in your TmdbMovie type definition, so read defensively
+  const p = (m as any)?.poster_path as string | undefined | null;
+  return p || null;
+}
+
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
@@ -203,39 +212,51 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "tmdbId required" }, { status: 400 });
     }
 
-    const seed = await fetchFullMovie(tmdbId);
+    // Seed (full)
+    const seed = await tmdbFetchFull(tmdbId);
 
+    // Candidate IDs
     const candidateIds = await fetchCandidates(seed);
 
-    // Fetch full data for candidates (parallel, but not too many)
-    const candidates = await Promise.all(candidateIds.map((id) => fetchFullMovie(id)));
+    // Fetch full data for candidates
+    const candidates = await Promise.all(candidateIds.map((id) => tmdbFetchFull(id)));
 
     // Score + sort
     const scored = candidates
       .map((c) => {
         const s = scoreCandidate(seed, c);
+        const poster_path = posterPathFromMovie(c);
+
         return {
           id: c.id,
           title: c.title,
           year: yearFromDate(c.release_date),
           recScore: Number(s.recScore.toFixed(4)),
           reasons: s.reasons.slice(0, 3),
+
+          // ✅ Posters for frontend
+          poster_path,
+          poster: poster_path, // same thing; your UI checks r.poster too
         };
       })
       .sort((a, b) => b.recScore - a.recScore);
 
-    // Diversity: max 2 same director in top 10 (simple enforcement)
+    // Diversity: max 2 same director in top 10
     const top: typeof scored = [];
     const dirCounts = new Map<number, number>();
+
     for (const r of scored) {
       if (top.length >= 10) break;
+
       const full = candidates.find((c) => c.id === r.id);
       const d = full ? pickDirectorId(full) : undefined;
+
       if (d) {
         const n = dirCounts.get(d) || 0;
         if (n >= 2) continue;
         dirCounts.set(d, n + 1);
       }
+
       top.push(r);
     }
 
