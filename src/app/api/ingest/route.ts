@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getMovie, upsertMovie } from "../../../lib/cache";
+import { getMovie, upsertMovie, type PersonRef } from "../../../lib/cache";
 import { buildMovieRecordBase, tmdbFetchFull, type TmdbMovie } from "../../../lib/tmdb";
 import { feelVectorFromText } from "../../../lib/embeddings";
 import { fetchIMDbAugment } from "../../../lib/imdb";
@@ -24,54 +24,59 @@ async function parseTmdbIdFromBody(req: NextRequest): Promise<number | null> {
 }
 
 function tmdbPoster(full: TmdbMovie): string {
-  // MovieRecord requires "poster" — store a TMDB path or empty string
-  // TMDB movie payload includes poster_path on the base movie object.
-  // Our TmdbMovie type may not include it, so we read defensively.
   const p = (full as any)?.poster_path as string | undefined | null;
   return p || "";
 }
 
-function tmdbDirectors(full: TmdbMovie): string[] {
-  const crew = full.credits?.crew || [];
-  return crew.filter((c) => c.job === "Director").map((c) => c.name);
+// ---- PersonRef builders ----
+// Assumption (most common): PersonRef = { id: number; name: string }
+function asPersonRef(id: number, name: string): PersonRef {
+  return { id, name } as PersonRef;
 }
 
-function tmdbWriters(full: TmdbMovie): string[] {
+function directorsFromTmdb(full: TmdbMovie): PersonRef[] {
   const crew = full.credits?.crew || [];
-  // Common writer-ish jobs in TMDB credits
+  return crew
+    .filter((c) => c.job === "Director")
+    .map((c) => asPersonRef(c.id, c.name));
+}
+
+function writersFromTmdb(full: TmdbMovie): PersonRef[] {
+  const crew = full.credits?.crew || [];
   const writerJobs = new Set(["Writer", "Screenplay", "Story", "Novel", "Author"]);
-  return crew.filter((c) => writerJobs.has(c.job)).map((c) => c.name);
+  return crew
+    .filter((c) => writerJobs.has(c.job))
+    .map((c) => asPersonRef(c.id, c.name));
 }
 
-function tmdbCastTop(full: TmdbMovie, n = 8): string[] {
+function castTopFromTmdb(full: TmdbMovie, n = 8): PersonRef[] {
   const cast = (full.credits?.cast || []).slice().sort((a, b) => a.order - b.order);
-  return cast.slice(0, n).map((c) => c.name);
+  return cast.slice(0, n).map((c) => asPersonRef(c.id, c.name));
 }
 
 async function ingestByTmdbId(tmdbId: number) {
-  // 1) Cache check
   const existing = await getMovie(tmdbId);
   if (existing) return { cached: true, movie: existing };
 
-  // 2) Fetch full TMDB
   const full = await tmdbFetchFull(tmdbId);
 
-  // 3) Base record (your existing shape)
+  // Build base record (your existing architecture)
   const input: { tmdbId: number; full: TmdbMovie } = { tmdbId, full };
   const base = buildMovieRecordBase(input);
 
-  // 4) Required MovieRecord fields that were missing
+  // Required MovieRecord fields
   const poster = tmdbPoster(full);
-  const directors = tmdbDirectors(full);
-  const writers = tmdbWriters(full);
-  const castTop = tmdbCastTop(full, 8);
+  const directors = directorsFromTmdb(full);
+  const writers = writersFromTmdb(full);
+  const castTop = castTopFromTmdb(full, 8);
+
+  // If your MovieRecord expects Date, change this to `new Date()`
   const updatedAt = new Date().toISOString();
 
-  // 5) Vectors
+  // Vectors
   const feelVec = feelVectorFromText(base.overview, base.tagline, 256);
-  const styleVec = feelVec; // placeholder
+  const styleVec = feelVec;
 
-  // 6) Upsert full MovieRecord
   const saved = await upsertMovie({
     ...base,
     poster,
@@ -83,7 +88,7 @@ async function ingestByTmdbId(tmdbId: number) {
     updatedAt,
   });
 
-  // 7) IMDb augment async (don’t block)
+  // Async IMDb augment
   (async () => {
     try {
       await fetchIMDbAugment(saved);
