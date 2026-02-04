@@ -63,10 +63,35 @@ function jaccard(a: number[], b: number[]) {
   return union === 0 ? 0 : inter / union;
 }
 
-function decadeFit(yA?: number, yB?: number) {
+/**
+ * "Year is a hint" similarity.
+ * - Very wide decay so only huge gaps matter.
+ * - Optional timeless override makes year irrelevant.
+ */
+function decadeFitHint(
+  yA?: number,
+  yB?: number,
+  opts?: { timeless?: boolean }
+) {
+  if (opts?.timeless) return 1.0;
   if (!yA || !yB) return 0.5;
+
   const d = Math.abs(yA - yB);
-  return Math.exp(-d / 20);
+
+  // Very wide decay: year is only a faint nudge.
+  // d=20 => ~0.78, d=40 => ~0.61, d=80 => ~0.37
+  const tau = 80;
+  return Math.exp(-d / tau);
+}
+
+/**
+ * Repo-friendly "timelessness" heuristic (no IMDb yet).
+ * Treat high-signal films as era-agnostic so year doesn't penalize them.
+ */
+function isTimeless(m: TmdbMovie) {
+  const va = m.vote_average ?? 0;
+  const vc = m.vote_count ?? 0;
+  return va >= 7.6 && vc >= 5000;
 }
 
 function runtimeSim(rA?: number | null, rB?: number | null) {
@@ -97,7 +122,11 @@ function scoreCandidate(seed: TmdbMovie, cand: TmdbMovie) {
   const yA = yearFromDate(seed.release_date);
   const yB = yearFromDate(cand.release_date);
 
-  const dFit = decadeFit(yA, yB);
+  // Year is intentionally a *hint*:
+  // - wide decay curve
+  // - timeless candidates ignore year entirely
+  const dFit = decadeFitHint(yA, yB, { timeless: isTimeless(cand) });
+
   const rSim = runtimeSim(seed.runtime, cand.runtime);
 
   const worldSim = jaccard(
@@ -115,20 +144,33 @@ function scoreCandidate(seed: TmdbMovie, cand: TmdbMovie) {
   const directionSim = directorMatch;
   const styleSim = rSim;
 
+  // Weights are explicit so the philosophy is obvious in GitHub.
+  // Year is a "mere hint" (2%).
+  const W = {
+    feel: 0.60,
+    direction: 0.15,
+    style: 0.10,
+    yearHint: 0.02,
+    acting: 0.05,
+    quality: 0.03,
+    world: 0.05,
+  } as const;
+
   const recScore =
-    0.60 * feelSim +
-    0.15 * directionSim +
-    0.10 * styleSim +
-    0.07 * dFit +
-    0.05 * actingSim +
-    0.03 * quality +
-    0.05 * worldSim;
+    W.feel * feelSim +
+    W.direction * directionSim +
+    W.style * styleSim +
+    W.yearHint * dFit +
+    W.acting * actingSim +
+    W.quality * quality +
+    W.world * worldSim;
 
   const reasons: string[] = [];
   if (feelSim > 0.78) reasons.push("Similar vibe (overview/tagline)");
   if (directorMatch === 1) reasons.push("Same director");
   if (actingSim > 0) reasons.push(`Shared cast (${Math.min(sharedCast, 3)}+)`);
-  if (dFit > 0.75) reasons.push("Close release era");
+  // Year is intentionally de-emphasized; only mention it lightly and only when not timeless.
+  if (dFit > 0.88 && !isTimeless(cand)) reasons.push("Light era similarity");
   if (worldSim > 0.25) reasons.push("Genre/keyword overlap");
   if (quality > 0.75) reasons.push("High audience signal");
 
